@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ggez::{event::EventHandler, graphics, timer, Context, ContextBuilder, GameResult};
 use rand::Rng;
 
@@ -17,25 +19,34 @@ const BIT_VEC_SIZE: usize = (GRID_WIDTH * GRID_HEIGHT + 63) / 64;
 struct Game {
     cells: Vec<u64>,
     next_cells: Vec<u64>,
+    cell_ages: HashMap<(usize, usize), usize>,
 }
 
 impl Game {
     fn new() -> Game {
         let mut rng = rand::thread_rng();
         let mut cells = vec![0; BIT_VEC_SIZE];
+        let mut cell_ages = HashMap::new();
 
-        for cell in cells.iter_mut() {
-            for bit in 0..64 {
-                if rng.gen() {
-                    // Randomly decide if the cell is alive
-                    *cell |= 1 << bit;
+        for x in 0..GRID_WIDTH {
+            for y in 0..GRID_HEIGHT {
+                let is_alive = rng.gen_bool(0.5); // 50% chance of being alive
+                if is_alive {
+                    let bit_index = y * GRID_WIDTH + x;
+                    let vec_index = bit_index / 64;
+                    let bit_offset = bit_index % 64;
+                    cells[vec_index] |= 1 << bit_offset;
+
+                    cell_ages.insert((x, y), 1); // Initialize age as 1
                 }
             }
         }
 
-        let next_cells = vec![0; BIT_VEC_SIZE];
-
-        Game { cells, next_cells }
+        Game {
+            cells,
+            next_cells: vec![0; BIT_VEC_SIZE],
+            cell_ages,
+        }
     }
 
     fn get_cell_state(&self, x: usize, y: usize) -> bool {
@@ -63,22 +74,25 @@ impl Game {
             for x in 0..GRID_WIDTH {
                 let alive = self.get_cell_state(x, y);
                 let neighbors = self.count_alive_neighbors(x, y);
-
-                // Apply the Game of Life rules
                 let next_state = match (alive, neighbors) {
-                    // Living cell with 2 or 3 neighbors stays alive.
-                    (true, 2) | (true, 3) => true,
-                    // Dead cell with exactly 3 neighbors becomes alive.
-                    (false, 3) => true,
-                    // All other cells become or stay dead.
+                    (true, 2) | (_, 3) => true,
                     _ => false,
                 };
+
+                if next_state {
+                    let age = self.cell_ages.entry((x, y)).or_insert(0);
+                    if !alive {
+                        *age = 0; // Reset age for newly born cells
+                    }
+                    *age += 1;
+                } else {
+                    self.cell_ages.remove(&(x, y)); // Remove age tracking for dead cells
+                }
 
                 self.set_cell_state(x, y, next_state);
             }
         }
 
-        // Swap cells and next_cells
         std::mem::swap(&mut self.cells, &mut self.next_cells);
     }
 
@@ -124,14 +138,17 @@ impl EventHandler<ggez::GameError> for Game {
 
         for y in 0..GRID_HEIGHT {
             for x in 0..GRID_WIDTH {
-                if self.get_cell_state(x, y) {
-                    // Draw the cell at the correct position
+                if let Some(age) = self.cell_ages.get(&(x, y)) {
+                    let neighbors = self.count_alive_neighbors(x, y);
+                    let color = calculate_color(*age, neighbors);
+
+                    // Draw the cell with the calculated color
                     let draw_params = graphics::DrawParam::default()
                         .dest(ggez::mint::Point2 {
                             x: x as f32 * CELL_SIZE,
                             y: y as f32 * CELL_SIZE,
                         })
-                        .color(graphics::Color::BLUE);
+                        .color(color);
                     graphics::draw(ctx, &cell_mesh, draw_params)?;
                 }
             }
@@ -142,8 +159,29 @@ impl EventHandler<ggez::GameError> for Game {
     }
 }
 
+fn calculate_color(age: usize, neighbors: usize) -> graphics::Color {
+    // Define base colors
+    let active_color = graphics::Color::from_rgb(236, 68, 155);
+    let stable_color = graphics::Color::from_rgb(153, 244, 67);
+    let max_active_age = 10; // Age threshold for a cell to be considered stable
+
+    let color = if age <= max_active_age {
+        active_color
+    } else {
+        stable_color
+    };
+
+    // Slightly adjust brightness based on neighbors
+    let brightness_factor = 1.0 - (neighbors as f32 * 0.05).min(0.2);
+    graphics::Color::new(
+        color.r * brightness_factor,
+        color.g * brightness_factor,
+        color.b * brightness_factor,
+        1.0,
+    )
+}
+
 fn main() -> GameResult {
-    // Create a ContextBuilder and set the window mode
     let (ctx, event_loop) = ContextBuilder::new("Game of Life", "Ishwor")
         .window_setup(ggez::conf::WindowSetup::default().title("Conway's Game of Life"))
         .window_mode(ggez::conf::WindowMode::default().dimensions(WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -151,6 +189,5 @@ fn main() -> GameResult {
 
     let game = Game::new();
 
-    // Run your game
     ggez::event::run(ctx, event_loop, game)
 }
